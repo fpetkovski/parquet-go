@@ -107,7 +107,14 @@ func (w *SortingWriter[T]) Flush() error {
 		return err
 	}
 
-	m, err := MergeRowGroups(f.RowGroups(),
+	rowGroups := make([]RowGroup, len(f.RowGroups()))
+	for i, rg := range f.RowGroups() {
+		rowGroups[i] = copyingRowGroup{
+			RowGroup: rg,
+		}
+	}
+
+	m, err := MergeRowGroups(rowGroups,
 		&RowGroupConfig{
 			Schema:  w.Schema(),
 			Sorting: w.sorting,
@@ -223,4 +230,36 @@ func (w *SortingWriter[T]) sortAndWriteBufferedRows() error {
 
 	w.numRows += n
 	return nil
+}
+
+type copyingRowGroup struct {
+	RowGroup
+}
+
+func newCopyingRowGroup(rowGroup RowGroup) *copyingRowGroup {
+	return &copyingRowGroup{RowGroup: rowGroup}
+}
+
+func (b copyingRowGroup) Rows() Rows {
+	return newCopyingRows(b.RowGroup.Rows())
+}
+
+type copyingRows struct {
+	Rows
+}
+
+func newCopyingRows(rows Rows) *copyingRows {
+	return &copyingRows{Rows: rows}
+}
+
+func (b copyingRows) ReadRows(rows []Row) (int, error) {
+	rowCopies := make([]Row, len(rows))
+	n, err := b.Rows.ReadRows(rowCopies)
+	if err != nil {
+		return n, err
+	}
+	for i, rowCopy := range rowCopies[:n] {
+		rows[i] = rowCopy.Clone()
+	}
+	return n, err
 }
