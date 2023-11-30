@@ -120,6 +120,7 @@ func (e *Encoding) DecodeDouble(dst []float64, src []byte) ([]float64, error) {
 func (e *Encoding) DecodeByteArray(dst []byte, src []byte, offsets []uint32) ([]byte, []uint32, error) {
 	dst, offsets = dst[:0], offsets[:0]
 
+	var numVals int
 	for i := 0; i < len(src); {
 		if (len(src) - i) < ByteArrayLengthSize {
 			return dst, offsets, ErrTooShort(len(src))
@@ -128,6 +129,18 @@ func (e *Encoding) DecodeByteArray(dst []byte, src []byte, offsets []uint32) ([]
 		if n > (len(src) - ByteArrayLengthSize) {
 			return dst, offsets, ErrTooShort(len(src))
 		}
+		numVals++
+		i += ByteArrayLengthSize + n
+	}
+	if len(offsets) < numVals {
+		offsets = make([]uint32, 0, numVals)
+	}
+	if len(dst) < len(src) {
+		dst = make([]byte, 0, len(src))
+	}
+
+	for i := 0; i < len(src); {
+		n := ByteArrayLength(src[i:])
 		i += ByteArrayLengthSize
 		offsets = append(offsets, uint32(len(dst)))
 		dst = append(dst, src[i:i+n]...)
