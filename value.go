@@ -787,6 +787,17 @@ func (v Value) Level(repetitionLevel, definitionLevel, columnIndex int) Value {
 	return v
 }
 
+// LevelUnsafe returns v with the repetition level, definition level, and column index
+// set to the values passed as arguments.
+//
+// The method panics if either argument is negative.
+func (v Value) LevelUnsafe(repetitionLevel, definitionLevel, columnIndex int) Value {
+	v.repetitionLevel = byte(repetitionLevel)
+	v.definitionLevel = byte(definitionLevel)
+	v.columnIndex = ^int16(columnIndex)
+	return v
+}
+
 // Clone returns a copy of v which does not share any pointers with it.
 func (v Value) Clone() Value {
 	switch k := v.Kind(); k {

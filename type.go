@@ -1532,7 +1532,9 @@ func (t *enumType) ConvertValue(val Value, typ Type) (Value, error) {
 // JSON constructs a leaf node of JSON logical type.
 //
 // https://github.com/apache/parquet-format/blob/master/LogicalTypes.md#json
-func JSON() Node { return Leaf(&jsonType{}) }
+func JSON() Node {
+	return Leaf(&jsonType{})
+}
 
 type jsonType format.JsonType
 
