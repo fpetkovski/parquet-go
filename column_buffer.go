@@ -157,19 +157,25 @@ type optionalColumnBuffer struct {
 	base               ColumnBuffer
 	reordered          bool
 	maxDefinitionLevel byte
-	rows               []int32
+	rows               *buffer[int32]
 	sortIndex          []int32
-	definitionLevels   []byte
+	definitionLevels   *buffer[byte]
 	nullOrdering       nullOrdering
 }
 
 func newOptionalColumnBuffer(base ColumnBuffer, maxDefinitionLevel byte, nullOrdering nullOrdering) *optionalColumnBuffer {
 	n := base.Cap()
+	var (
+		rows   = int32Buffers.get(n)
+		levels = buffers.get(n)
+	)
+	rows.data = rows.data[:0]
+	levels.data = levels.data[:0]
 	return &optionalColumnBuffer{
 		base:               base,
 		maxDefinitionLevel: maxDefinitionLevel,
-		rows:               make([]int32, 0, n),
-		definitionLevels:   make([]byte, 0, n),
+		rows:               rows,
+		definitionLevels:   levels,
 		nullOrdering:       nullOrdering,
 	}
 }
@@ -179,8 +185,8 @@ func (col *optionalColumnBuffer) Clone() ColumnBuffer {
 		base:               col.base.Clone(),
 		reordered:          col.reordered,
 		maxDefinitionLevel: col.maxDefinitionLevel,
-		rows:               slices.Clone(col.rows),
-		definitionLevels:   slices.Clone(col.definitionLevels),
+		rows:               col.rows,
+		definitionLevels:   col.definitionLevels,
 		nullOrdering:       col.nullOrdering,
 	}
 }
@@ -190,11 +196,11 @@ func (col *optionalColumnBuffer) Type() Type {
 }
 
 func (col *optionalColumnBuffer) NumValues() int64 {
-	return int64(len(col.definitionLevels))
+	return int64(len(col.definitionLevels.data))
 }
 
 func (col *optionalColumnBuffer) ColumnIndex() (ColumnIndex, error) {
-	return columnIndexOfNullable(col.base, col.maxDefinitionLevel, col.definitionLevels)
+	return columnIndexOfNullable(col.base, col.maxDefinitionLevel, col.definitionLevels.data)
 }
 
 func (col *optionalColumnBuffer) OffsetIndex() (OffsetIndex, error) {
@@ -213,6 +219,12 @@ func (col *optionalColumnBuffer) Column() int {
 	return col.base.Column()
 }
 
+func (col *optionalColumnBuffer) Close() error {
+	col.rows.unref()
+	col.definitionLevels.unref()
+	return nil
+}
+
 func (col *optionalColumnBuffer) Pages() Pages {
 	return onePage(col.Page())
 }
@@ -222,8 +234,8 @@ func (col *optionalColumnBuffer) Page() Page {
 	// This case is also important because the cyclic sorting modifies the
 	// buffer which makes it unsafe to read the buffer concurrently.
 	if col.reordered {
-		numNulls := countLevelsNotEqual(col.definitionLevels, col.maxDefinitionLevel)
-		numValues := len(col.rows) - numNulls
+		numNulls := countLevelsNotEqual(col.definitionLevels.data, col.maxDefinitionLevel)
+		numValues := len(col.rows.data) - numNulls
 
 		if numValues > 0 {
 			if cap(col.sortIndex) < numValues {
@@ -231,7 +243,7 @@ func (col *optionalColumnBuffer) Page() Page {
 			}
 			sortIndex := col.sortIndex[:numValues]
 			i := 0
-			for _, j := range col.rows {
+			for _, j := range col.rows.data {
 				if j >= 0 {
 					sortIndex[j] = int32(i)
 					i++
@@ -248,9 +260,9 @@ func (col *optionalColumnBuffer) Page() Page {
 		}
 
 		i := 0
-		for _, r := range col.rows {
+		for _, r := range col.rows.data {
 			if r >= 0 {
-				col.rows[i] = int32(i)
+				col.rows.data[i] = int32(i)
 				i++
 			}
 		}
@@ -258,31 +270,31 @@ func (col *optionalColumnBuffer) Page() Page {
 		col.reordered = false
 	}
 
-	return newOptionalPage(col.base.Page(), col.maxDefinitionLevel, col.definitionLevels)
+	return newOptionalPage(col.base.Page(), col.maxDefinitionLevel, col.definitionLevels.data)
 }
 
 func (col *optionalColumnBuffer) Reset() {
 	col.base.Reset()
-	col.rows = col.rows[:0]
-	col.definitionLevels = col.definitionLevels[:0]
+	col.rows.data = col.rows.data[:0]
+	col.definitionLevels.data = col.definitionLevels.data[:0]
 }
 
 func (col *optionalColumnBuffer) Size() int64 {
-	return int64(4*len(col.rows)+4*len(col.sortIndex)+len(col.definitionLevels)) + col.base.Size()
+	return int64(4*len(col.rows.data)+4*len(col.sortIndex)+len(col.definitionLevels.data)) + col.base.Size()
 }
 
-func (col *optionalColumnBuffer) Cap() int { return cap(col.rows) }
+func (col *optionalColumnBuffer) Cap() int { return cap(col.rows.data) }
 
-func (col *optionalColumnBuffer) Len() int { return len(col.rows) }
+func (col *optionalColumnBuffer) Len() int { return len(col.rows.data) }
 
 func (col *optionalColumnBuffer) Less(i, j int) bool {
 	return col.nullOrdering(
 		col.base,
-		int(col.rows[i]),
-		int(col.rows[j]),
+		int(col.rows.data[i]),
+		int(col.rows.data[j]),
 		col.maxDefinitionLevel,
-		col.definitionLevels[i],
-		col.definitionLevels[j],
+		col.definitionLevels.data[i],
+		col.definitionLevels.data[j],
 	)
 }
 
@@ -292,8 +304,8 @@ func (col *optionalColumnBuffer) Swap(i, j int) {
 	// reorder the underlying buffer using a cyclic sort when the buffer is
 	// materialized into a page view.
 	col.reordered = true
-	col.rows[i], col.rows[j] = col.rows[j], col.rows[i]
-	col.definitionLevels[i], col.definitionLevels[j] = col.definitionLevels[j], col.definitionLevels[i]
+	col.rows.data[i], col.rows.data[j] = col.rows.data[j], col.rows.data[i]
+	col.definitionLevels.data[i], col.definitionLevels.data[j] = col.definitionLevels.data[j], col.definitionLevels.data[i]
 }
 
 func (col *optionalColumnBuffer) WriteValues(values []Value) (n int, err error) {
@@ -311,8 +323,8 @@ func (col *optionalColumnBuffer) WriteValues(values []Value) (n int, err error) 
 		// Write the contiguous null values up until the first non-null value
 		// obtained in the for loop above.
 		for _, v := range values[i:n] {
-			col.rows = append(col.rows, -1)
-			col.definitionLevels = append(col.definitionLevels, v.definitionLevel)
+			col.rows.data = append(col.rows.data, -1)
+			col.definitionLevels.data = append(col.definitionLevels.data, v.definitionLevel)
 		}
 
 		// Collect index range of contiguous non-null values, from i to n.
@@ -326,10 +338,10 @@ func (col *optionalColumnBuffer) WriteValues(values []Value) (n int, err error) 
 		// and the outer for loop will terminate.
 		if i < n {
 			count, err := col.base.WriteValues(values[i:n])
-			col.definitionLevels = appendLevel(col.definitionLevels, col.maxDefinitionLevel, count)
+			col.definitionLevels.data = appendLevel(col.definitionLevels.data, col.maxDefinitionLevel, count)
 
 			for count > 0 {
-				col.rows = append(col.rows, rowIndex)
+				col.rows.data = append(col.rows.data, rowIndex)
 				rowIndex++
 				count--
 			}
@@ -347,34 +359,34 @@ func (col *optionalColumnBuffer) writeValues(rows sparse.Array, levels columnLev
 	// we still need to output a row to the buffer to record the definition
 	// level.
 	if rows.Len() == 0 {
-		col.definitionLevels = append(col.definitionLevels, levels.definitionLevel)
-		col.rows = append(col.rows, -1)
+		col.definitionLevels.data = append(col.definitionLevels.data, levels.definitionLevel)
+		col.rows.data = append(col.rows.data, -1)
 		return
 	}
 
-	col.definitionLevels = appendLevel(col.definitionLevels, levels.definitionLevel, rows.Len())
+	col.definitionLevels.data = appendLevel(col.definitionLevels.data, levels.definitionLevel, rows.Len())
 
-	i := len(col.rows)
-	j := len(col.rows) + rows.Len()
+	i := len(col.rows.data)
+	j := len(col.rows.data) + rows.Len()
 
-	if j <= cap(col.rows) {
-		col.rows = col.rows[:j]
+	if j <= cap(col.rows.data) {
+		col.rows.data = col.rows.data[:j]
 	} else {
 		tmp := make([]int32, j, 2*j)
-		copy(tmp, col.rows)
-		col.rows = tmp
+		copy(tmp, col.rows.data)
+		col.rows.data = tmp
 	}
 
 	if levels.definitionLevel != col.maxDefinitionLevel {
-		broadcastValueInt32(col.rows[i:], -1)
+		broadcastValueInt32(col.rows.data[i:], -1)
 	} else {
-		broadcastRangeInt32(col.rows[i:], int32(col.base.Len()))
+		broadcastRangeInt32(col.rows.data[i:], int32(col.base.Len()))
 		col.base.writeValues(rows, levels)
 	}
 }
 
 func (col *optionalColumnBuffer) ReadValuesAt(values []Value, offset int64) (int, error) {
-	length := int64(len(col.definitionLevels))
+	length := int64(len(col.definitionLevels.data))
 	if offset < 0 {
 		return 0, errRowIndexOutOfBounds(offset, length)
 	}
@@ -385,8 +397,8 @@ func (col *optionalColumnBuffer) ReadValuesAt(values []Value, offset int64) (int
 		values = values[:length]
 	}
 
-	numNulls1 := int64(countLevelsNotEqual(col.definitionLevels[:offset], col.maxDefinitionLevel))
-	numNulls2 := int64(countLevelsNotEqual(col.definitionLevels[offset:offset+length], col.maxDefinitionLevel))
+	numNulls1 := int64(countLevelsNotEqual(col.definitionLevels.data[:offset], col.maxDefinitionLevel))
+	numNulls2 := int64(countLevelsNotEqual(col.definitionLevels.data[offset:offset+length], col.maxDefinitionLevel))
 
 	if numNulls2 < length {
 		n, err := col.base.ReadValuesAt(values[:length-numNulls2], offset-numNulls1)
@@ -399,7 +411,7 @@ func (col *optionalColumnBuffer) ReadValuesAt(values []Value, offset int64) (int
 		columnIndex := ^int16(col.Column())
 		i := numNulls2 - 1
 		j := length - 1
-		definitionLevels := col.definitionLevels[offset : offset+length]
+		definitionLevels := col.definitionLevels.data[offset : offset+length]
 		maxDefinitionLevel := col.maxDefinitionLevel
 
 		for n := len(definitionLevels) - 1; n >= 0 && j > i; n-- {

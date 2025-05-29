@@ -1382,7 +1382,7 @@ func (c *ColumnWriter) flushFilterPages() (err error) {
 		pageReader = rbuf
 	}
 
-	pbuf := (*buffer)(nil)
+	var pbuf *buffer[byte] = nil
 	defer func() {
 		if pbuf != nil {
 			pbuf.unref()
@@ -1483,6 +1483,11 @@ func (c *ColumnWriter) Close() (err error) {
 	}
 	if err := c.Flush(); err != nil {
 		return err
+	}
+	if closer, ok := c.columnBuffer.(io.Closer); ok {
+		if err := closer.Close(); err != nil {
+			return err
+		}
 	}
 	c.columnBuffer = nil
 	return nil

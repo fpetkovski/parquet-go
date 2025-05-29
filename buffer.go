@@ -467,22 +467,22 @@ var (
 	_ ValueWriter = (*bufferWriter)(nil)
 )
 
-type buffer struct {
-	data  []byte
+type buffer[T any] struct {
+	data  []T
 	refc  uintptr
-	pool  *bufferPool
+	pool  *bufferPool[T]
 	stack []byte
 }
 
-func (b *buffer) refCount() int {
+func (b *buffer[T]) refCount() int {
 	return int(atomic.LoadUintptr(&b.refc))
 }
 
-func (b *buffer) ref() {
+func (b *buffer[T]) ref() {
 	atomic.AddUintptr(&b.refc, +1)
 }
 
-func (b *buffer) unref() {
+func (b *buffer[T]) unref() {
 	if atomic.AddUintptr(&b.refc, ^uintptr(0)) == 0 {
 		if b.pool != nil {
 			b.pool.put(b)
@@ -490,13 +490,13 @@ func (b *buffer) unref() {
 	}
 }
 
-func monitorBufferRelease(b *buffer) {
+func monitorBufferRelease[T any](b *buffer[T]) {
 	if rc := b.refCount(); rc != 0 {
 		log.Printf("PARQUETGODEBUG: buffer garbage collected with non-zero reference count\n%s", string(b.stack))
 	}
 }
 
-type bufferPool struct {
+type bufferPool[T any] struct {
 	// Buckets are split in two groups for short and large buffers. In the short
 	// buffer group (below 256KB), the growth rate between each bucket is 2. The
 	// growth rate changes to 1.5 in the larger buffer group.
@@ -512,27 +512,27 @@ type bufferPool struct {
 	buckets [bufferPoolBucketCount]sync.Pool
 }
 
-func (p *bufferPool) newBuffer(bufferSize, bucketSize int) *buffer {
-	b := &buffer{
-		data: make([]byte, bufferSize, bucketSize),
+func (p *bufferPool[T]) newBuffer(bufferSize, bucketSize int) *buffer[T] {
+	b := &buffer[T]{
+		data: make([]T, bufferSize, bucketSize),
 		refc: 1,
 		pool: p,
 	}
 	if debug.TRACEBUF > 0 {
 		b.stack = make([]byte, 4096)
-		runtime.SetFinalizer(b, monitorBufferRelease)
+		runtime.SetFinalizer(b, monitorBufferRelease[byte])
 	}
 	return b
 }
 
 // get returns a buffer from the levelled buffer pool. size is used to choose
 // the appropriate pool.
-func (p *bufferPool) get(bufferSize int) *buffer {
+func (p *bufferPool[T]) get(bufferSize int) *buffer[T] {
 	bucketIndex, bucketSize := bufferPoolBucketIndexAndSizeOfGet(bufferSize)
 
-	b := (*buffer)(nil)
+	b := (*buffer[T])(nil)
 	if bucketIndex >= 0 {
-		b, _ = p.buckets[bucketIndex].Get().(*buffer)
+		b, _ = p.buckets[bucketIndex].Get().(*buffer[T])
 	}
 
 	if b == nil {
@@ -548,7 +548,7 @@ func (p *bufferPool) get(bufferSize int) *buffer {
 	return b
 }
 
-func (p *bufferPool) put(b *buffer) {
+func (p *bufferPool[T]) put(b *buffer[T]) {
 	if b.pool != p {
 		panic("BUG: buffer returned to a different pool than the one it was allocated from")
 	}
@@ -605,18 +605,19 @@ func bufferPoolBucketIndexAndSizeOfPut(size int) (int, int) {
 }
 
 var (
-	buffers bufferPool
+	buffers      bufferPool[byte]
+	int32Buffers bufferPool[int32]
 )
 
 type bufferedPage struct {
 	Page
-	values           *buffer
-	offsets          *buffer
-	repetitionLevels *buffer
-	definitionLevels *buffer
+	values           *buffer[byte]
+	offsets          *buffer[byte]
+	repetitionLevels *buffer[byte]
+	definitionLevels *buffer[byte]
 }
 
-func newBufferedPage(page Page, values, offsets, definitionLevels, repetitionLevels *buffer) *bufferedPage {
+func newBufferedPage(page Page, values, offsets, definitionLevels, repetitionLevels *buffer[byte]) *bufferedPage {
 	p := &bufferedPage{
 		Page:             page,
 		values:           values,
@@ -655,13 +656,13 @@ func (p *bufferedPage) Release() {
 	bufferUnref(p.repetitionLevels)
 }
 
-func bufferRef(buf *buffer) {
+func bufferRef[T any](buf *buffer[T]) {
 	if buf != nil {
 		buf.ref()
 	}
 }
 
-func bufferUnref(buf *buffer) {
+func bufferUnref(buf *buffer[byte]) {
 	if buf != nil {
 		buf.unref()
 	}
