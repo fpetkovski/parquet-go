@@ -27,6 +27,12 @@ const (
 	maxUncompressedPageSize = math.MaxInt32
 )
 
+type closerFunc func() error
+
+func (c closerFunc) Close() error {
+	return c()
+}
+
 // GenericWriter is similar to a Writer but uses a type parameter to define the
 // Go type representing the schema of rows being written.
 //
@@ -175,6 +181,11 @@ func makeWriteFunc[T any](t reflect.Type, schema *Schema) writeFunc[T] {
 }
 
 func (w *GenericWriter[T]) Close() error {
+	for _, c := range w.ColumnWriters() {
+		if err := c.Close(); err != nil {
+			return err
+		}
+	}
 	return w.base.Close()
 }
 
@@ -1264,6 +1275,8 @@ type ColumnWriter struct {
 
 	columnChunk *format.ColumnChunk
 	offsetIndex *format.OffsetIndex
+
+	closers []io.Closer
 }
 
 func (c *ColumnWriter) reset() {
@@ -1438,7 +1451,15 @@ func (c *ColumnWriter) newColumnBuffer() ColumnBuffer {
 	case c.maxRepetitionLevel > 0:
 		column = newRepeatedColumnBuffer(column, c.maxRepetitionLevel, c.maxDefinitionLevel, nullsGoLast)
 	case c.maxDefinitionLevel > 0:
-		column = newOptionalColumnBuffer(column, c.maxDefinitionLevel, nullsGoLast)
+		n := int(float64(column.Cap()) * 1.5)
+		rows := int32Buffers.get(n)
+		definitionLevels := buffers.get(n)
+		c.closers = append(c.closers, closerFunc(func() error {
+			rows.unref()
+			definitionLevels.unref()
+			return nil
+		}))
+		column = newOptionalColumnBuffer(column, rows.data[:0], definitionLevels.data[:0], c.maxDefinitionLevel, nullsGoLast)
 	}
 	return column
 }
@@ -1478,6 +1499,11 @@ func (c *ColumnWriter) Close() (err error) {
 	}
 	if err := c.Flush(); err != nil {
 		return err
+	}
+	for _, closer := range c.closers {
+		if err := closer.Close(); err != nil {
+			return err
+		}
 	}
 	c.columnBuffer = nil
 	return nil
