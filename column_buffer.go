@@ -154,23 +154,29 @@ func (col *reversedColumnBuffer) Less(i, j int) bool { return col.ColumnBuffer.L
 // max definition level and a zero repetition level, which may be because the
 // column or one of its parent(s) are marked optional.
 type optionalColumnBuffer struct {
-	base               ColumnBuffer
-	reordered          bool
-	maxDefinitionLevel byte
-	rows               []int32
-	sortIndex          []int32
-	definitionLevels   []byte
-	nullOrdering       nullOrdering
+	base                   ColumnBuffer
+	reordered              bool
+	maxDefinitionLevel     byte
+	rows                   []int32
+	rowsBuffer             *genericBuffer[int32]
+	sortIndex              []int32
+	definitionLevels       []byte
+	definitionLevelsBuffer *buffer
+	nullOrdering           nullOrdering
 }
 
 func newOptionalColumnBuffer(base ColumnBuffer, maxDefinitionLevel byte, nullOrdering nullOrdering) *optionalColumnBuffer {
 	n := base.Cap()
+	rows := int32Buffers.get(n)
+	definitionLevels := buffers.get(n)
 	return &optionalColumnBuffer{
-		base:               base,
-		maxDefinitionLevel: maxDefinitionLevel,
-		rows:               make([]int32, 0, n),
-		definitionLevels:   make([]byte, 0, n),
-		nullOrdering:       nullOrdering,
+		base:                   base,
+		maxDefinitionLevel:     maxDefinitionLevel,
+		rows:                   rows.data[:0],
+		rowsBuffer:             rows,
+		definitionLevels:       definitionLevels.data[:0],
+		definitionLevelsBuffer: definitionLevels,
+		nullOrdering:           nullOrdering,
 	}
 }
 
