@@ -674,12 +674,6 @@ func newWriter(output io.Writer, config *WriterConfig) *writer {
 		defaultCompression = &Uncompressed
 	}
 
-	// Those buffers are scratch space used to generate the page header and
-	// content, they are shared by all column chunks because they are only
-	// used during calls to writeDictionaryPage or writeDataPage, which are
-	// not done concurrently.
-	buffers := new(writerBuffers)
-
 	forEachLeafColumnOf(config.Schema, func(leaf leafColumn) {
 		encoding := encodingOf(leaf.node, config.Encodings)
 		dictionary := Dictionary(nil)
@@ -701,7 +695,7 @@ func newWriter(output io.Writer, config *WriterConfig) *writer {
 		}
 
 		c := &ColumnWriter{
-			buffers:            buffers,
+			buffers:            new(writerBuffers),
 			pool:               config.ColumnPageBuffers,
 			columnPath:         leaf.path,
 			columnType:         columnType,
@@ -727,7 +721,7 @@ func newWriter(output io.Writer, config *WriterConfig) *writer {
 			isCompressed: isCompressed(compression) && (dataPageType != format.DataPageV2 || dictionary == nil),
 		}
 
-		c.header.encoder.Reset(c.header.protocol.NewWriter(&buffers.header))
+		c.header.encoder.Reset(c.header.protocol.NewWriter(&c.buffers.header))
 
 		if leaf.maxDefinitionLevel > 0 {
 			c.encodings = addEncoding(c.encodings, format.RLE)
